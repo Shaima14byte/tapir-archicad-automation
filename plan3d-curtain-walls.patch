@@ -1,0 +1,414 @@
+From 8a6c04cd000eaa1929fdc9eedd2c6f55f35d719a Mon Sep 17 00:00:00 2001
+From: PlanTo3D <mabaniprojects@gmail.com>
+Date: Thu, 15 Oct 2026 10:37:48 +0300
+Subject: [PATCH] Add CreateCurtainWalls command and an Archicad 29 Windows
+ build workflow
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QYPRMNYMH1SM9hcAvkyhSC
+---
+ .github/workflows/plan3d_ac29.yml             |  26 ++
+ archicad-addon/Sources/AddOnMain.cpp          |   4 +
+ .../Sources/ExtendedElementCommands.cpp       | 232 ++++++++++++++++++
+ .../Sources/ExtendedElementCommands.hpp       |  10 +
+ docs/archicad-addon/command_definitions.js    |  75 ++++++
+ 5 files changed, 347 insertions(+)
+ create mode 100644 .github/workflows/plan3d_ac29.yml
+
+diff --git a/.github/workflows/plan3d_ac29.yml b/.github/workflows/plan3d_ac29.yml
+new file mode 100644
+index 0000000..b088fad
+--- /dev/null
++++ b/.github/workflows/plan3d_ac29.yml
+@@ -0,0 +1,26 @@
++name: PlanTo3D Tapir (Archicad 29 Windows)
++
++# Builds only the Archicad 29 Windows add-on (TapirAddOn_AC29_Win.apx) with the
++# CreateCurtainWalls command used by PlanTo3D. Runs on every push and from the
++# Actions tab ("Run workflow"). Download the result under "Artifacts".
++on:
++  push:
++  workflow_dispatch:
++
++jobs:
++  build_ac29_win:
++    runs-on: windows-2022
++    steps:
++    - name: Checkout repo
++      uses: actions/checkout@v4
++    - name: Download Archicad 29 Development Kit
++      run: python archicad-addon/Tools/download_and_unzip.py https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/29.3000/API.Development.Kit.WIN.29.3000.zip archicad-addon/Build/DevKits/AC29
++    - name: Generate project
++      run: cmake -B archicad-addon/Build -G "Visual Studio 17 2022" -A "x64" -T "v143" -DAC_VERSION=29 -DAC_API_DEVKIT_DIR="archicad-addon/Build/DevKits/AC29/Support" archicad-addon
++    - name: Build
++      run: cmake --build archicad-addon/Build --config RelWithDebInfo
++    - name: Upload add-on
++      uses: actions/upload-artifact@v4
++      with:
++        name: TapirAddOn_AC29_Win_PlanTo3D
++        path: archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC29_Win.apx
+diff --git a/archicad-addon/Sources/AddOnMain.cpp b/archicad-addon/Sources/AddOnMain.cpp
+index 5b4dc08..f1e1232 100644
+--- a/archicad-addon/Sources/AddOnMain.cpp
++++ b/archicad-addon/Sources/AddOnMain.cpp
+@@ -467,6 +467,10 @@ GSErrCode Initialize (void)
+             elementCommands, "1.4.0",
+             "Creates Morph elements from simple box definitions."
+         );
++        err |= RegisterCommand<CreateCurtainWallsCommand> (
++            elementCommands, "1.7.2",
++            "Creates native Curtain Wall elements along polylines, with evenly spaced frames and optional equal horizontal divisions. Uses the Curtain Wall tool defaults or a favorite for everything else."
++        );
+         err |= RegisterCommand<CreateRoofsCommand> (
+             elementCommands, "1.4.0",
+             "Creates Roof elements based on footprint, level and roof profile data. Creates a multi-plane roof by default; pass 'pivotLine' (and optionally 'angle') to create a single-plane roof instead."
+diff --git a/archicad-addon/Sources/ExtendedElementCommands.cpp b/archicad-addon/Sources/ExtendedElementCommands.cpp
+index b188a58..97d7f13 100644
+--- a/archicad-addon/Sources/ExtendedElementCommands.cpp
++++ b/archicad-addon/Sources/ExtendedElementCommands.cpp
+@@ -7641,3 +7641,235 @@ GSErrCode ApplyFavoriteToElementDefaults (const GS::UniString& favoriteName, API
+ 
+     return NoError;
+ }
++
++
++// ---------------------------------------------------------------------------------------------
++// CreateCurtainWalls: native Curtain Wall elements along a polyline, using the Curtain Wall
++// tool defaults (or a favorite), with an even mullion spacing and optional transom divisions.
++// ---------------------------------------------------------------------------------------------
++
++CreateCurtainWallsCommand::CreateCurtainWallsCommand () :
++    CommandBase (CommonSchema::Used)
++{
++}
++
++GS::String CreateCurtainWallsCommand::GetName () const
++{
++    return "CreateCurtainWalls";
++}
++
++GS::Optional<GS::UniString> CreateCurtainWallsCommand::GetInputParametersSchema () const
++{
++    return R"({
++        "type": "object",
++        "properties": {
++            "curtainWallsData": {
++                "type": "array",
++                "description": "Array of data to create Curtain Walls.",
++                "items": {
++                    "type": "object",
++                    "properties": {
++                        "polylineCoordinates": {
++                            "type": "array",
++                            "description": "The base line of the curtain wall: 2 or more points, one straight segment between each pair.",
++                            "items": { "$ref": "#/Coordinate2D" },
++                            "minItems": 2
++                        },
++                        "level": {
++                            "type": "number",
++                            "description": "Absolute Z of the bottom of the curtain wall."
++                        },
++                        "floorIndex": {
++                            "type": "integer",
++                            "description": "Optional home story index. If omitted, derived from level."
++                        },
++                        "height": {
++                            "type": "number",
++                            "description": "Height of the curtain wall.",
++                            "exclusiveMinimum": 0.0
++                        },
++                        "frameSpacing": {
++                            "type": "number",
++                            "description": "Optional target distance between the vertical frames (mullions). The segment is divided evenly into round(length / frameSpacing) panels. If omitted, the tool default pattern is kept.",
++                            "exclusiveMinimum": 0.0
++                        },
++                        "horizontalDivisions": {
++                            "type": "integer",
++                            "description": "Optional number of equal panel rows (1 = no transoms). If omitted together with frameSpacing, the tool default pattern is kept.",
++                            "minimum": 1
++                        },
++                        "flipped": {
++                            "type": "boolean",
++                            "description": "Optional. Flips the curtain wall to the other side of its base line."
++                        },
++                        "favoriteName": {
++                            "type": "string",
++                            "description": "Optional name of a Curtain Wall favorite applied to the tool defaults before creation."
++                        }
++                    },
++                    "additionalProperties": false,
++                    "required": [
++                        "polylineCoordinates",
++                        "level",
++                        "height"
++                    ]
++                }
++            }
++        },
++        "additionalProperties": false,
++        "required": [
++            "curtainWallsData"
++        ]
++    })";
++}
++
++GS::Optional<GS::UniString> CreateCurtainWallsCommand::GetRawResponseSchema () const
++{
++    return R"({
++        "type": "object",
++        "properties": {
++            "elements": {
++                "$ref": "#/ElementIdsOrErrors"
++            }
++        },
++        "additionalProperties": false,
++        "required": ["elements"]
++    })";
++}
++
++#ifdef ServerMainVers_2700
++static void SetEvenCurtainWallPattern (API_CWSegmentPatternData& pattern, UInt32 divisions)
++{
++    pattern.nPattern = 1;
++    pattern.logic = APICWSePL_NumberOfDivisions;
++    pattern.nDivisions = divisions;
++    pattern.nFlexibleIDs = 1;
++    pattern.endWithID = 0;
++    BMpKill (reinterpret_cast<GSPtr*> (&pattern.pattern));
++    pattern.pattern = reinterpret_cast<double*> (BMpAll (sizeof (double)));
++    pattern.pattern[0] = 1.0;
++    BMpKill (reinterpret_cast<GSPtr*> (&pattern.flexibleIDs));
++    pattern.flexibleIDs = reinterpret_cast<UInt32*> (BMpAll (sizeof (UInt32)));
++    pattern.flexibleIDs[0] = 0;
++}
++#endif
++
++GS::ObjectState CreateCurtainWallsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl&) const
++{
++#ifndef ServerMainVers_2700
++    (void) parameters;
++    return CreateErrorResponse (APIERR_GENERAL, "CreateCurtainWalls needs Archicad 27 or later.");
++#else
++    GS::Array<GS::ObjectState> curtainWallsData;
++    auto error = GetElementArray (parameters, "curtainWallsData", curtainWallsData);
++    if (error.HasValue ()) {
++        return CreateErrorResponse (APIERR_BADPARS, error.Get ());
++    }
++
++    if (curtainWallsData.IsEmpty ()) {
++        // an empty call only tells the caller that this command exists: no undo step
++        return CreateElementListResponse (GS::Array<GS::ObjectState> ());
++    }
++
++    const Stories stories = GetStories ();
++
++    return ExecuteCreateWithElements ("Create Curtain Walls", [&](GS::Array<GS::ObjectState>& elements) {
++        for (const auto& data : curtainWallsData) {
++            GS::Array<GS::ObjectState> coordinates;
++            data.Get ("polylineCoordinates", coordinates);
++            if (coordinates.GetSize () < 2) {
++                elements.Push (CreateErrorResponse (APIERR_BADPARS, "A curtain wall needs at least 2 polylineCoordinates."));
++                continue;
++            }
++            double level = 0.0;
++            double height = 0.0;
++            if (!data.Get ("level", level) || !data.Get ("height", height) || height <= 0.0) {
++                elements.Push (CreateErrorResponse (APIERR_BADPARS, "Missing or invalid 'level' or 'height'."));
++                continue;
++            }
++
++            // same favorite flow as windows and doors: favorite -> tool defaults, then GetDefaults
++            if (ApplyWindowOrDoorFavoriteToDefaults (data, API_CurtainWallID) != NoError) {
++                elements.Push (CreateErrorResponse (APIERR_BADNAME, "Failed to resolve `favoriteName` for curtain wall (missing, or not a Curtain Wall favorite)."));
++                continue;
++            }
++
++            API_Element element = {};
++            API_ElementMemo memo = {};
++            const GS::OnExit cleanup ([&]() {
++                ACAPI_DisposeElemMemoHdls (&memo);
++            });
++            #ifdef ServerMainVers_2600
++            element.header.type = API_CurtainWallID;
++            #else
++            element.header.typeID = API_CurtainWallID;
++            #endif
++            GSErrCode err = ACAPI_Element_GetDefaults (&element, &memo);
++            if (err != NoError) {
++                elements.Push (CreateErrorResponse (err, "Failed to prepare curtain wall defaults."));
++                continue;
++            }
++
++            // base line: memo.coords[1..n], index 0 unused
++            const UInt32 nPoints = coordinates.GetSize ();
++            BMhKill (reinterpret_cast<GSHandle*> (&memo.coords));
++            BMhKill (reinterpret_cast<GSHandle*> (&memo.parcs));
++            memo.coords = reinterpret_cast<API_Coord**> (BMhAllClear ((nPoints + 1) * sizeof (API_Coord)));
++            double totalLength = 0.0;
++            for (UInt32 i = 0; i < nPoints; ++i) {
++                (*memo.coords)[i + 1] = Get2DCoordinateFromObjectState (coordinates[i]);
++                if (i > 0) {
++                    const API_Coord& a = (*memo.coords)[i];
++                    const API_Coord& b = (*memo.coords)[i + 1];
++                    totalLength = GS::Max (totalLength, sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)));
++                }
++            }
++            element.curtainWall.nSegments = nPoints - 1;
++            element.curtainWall.height = height;
++
++            const auto floorIndexAndOffset = ResolveFloorIndexAndOffset (data, "floorIndex", level, stories);
++            element.header.floorInd = floorIndexAndOffset.first;
++            element.curtainWall.storyRelLevel = floorIndexAndOffset.second;
++
++            bool flipped = false;
++            if (data.Get ("flipped", flipped)) {
++                element.curtainWall.flipped = flipped;
++            }
++
++            // grid: evenly spaced frames and equal rows, one default cell
++            double frameSpacing = 0.0;
++            Int32 horizontalDivisions = 0;
++            const bool hasSpacing = data.Get ("frameSpacing", frameSpacing) && frameSpacing > 0.0;
++            const bool hasRows = data.Get ("horizontalDivisions", horizontalDivisions) && horizontalDivisions >= 1;
++            if (hasSpacing || hasRows) {
++                const UInt32 columns = hasSpacing ? static_cast<UInt32> (GS::Max (1.0, std::round (totalLength / frameSpacing))) : 1;
++                const UInt32 rows = hasRows ? static_cast<UInt32> (horizontalDivisions) : 1;
++                SetEvenCurtainWallPattern (memo.cWSegPrimaryPattern, columns);
++                SetEvenCurtainWallPattern (memo.cWSegSecondaryPattern, rows);
++
++                API_CWSegmentPatternCellData cell = {};
++                if (memo.cWSegPatternCells != nullptr && BMpGetSize (reinterpret_cast<GSPtr> (memo.cWSegPatternCells)) >= static_cast<Int32> (sizeof (API_CWSegmentPatternCellData))) {
++                    cell = memo.cWSegPatternCells[0];
++                } else {
++                    cell.leftPanelID = APICWPanelClass_FirstCustomClass;
++                    cell.rightPanelID = APICWPanelClass_FirstCustomClass;
++                    cell.leftFrameID = APICWFrameClass_Merged;
++                    cell.bottomFrameID = APICWFrameClass_Merged;
++                    cell.crossingFrameID = APICWFrameClass_Merged;
++                }
++                cell.crossingFrameType = APICWCFT_NoCrossingFrame;
++                BMpKill (reinterpret_cast<GSPtr*> (&memo.cWSegPatternCells));
++                memo.cWSegPatternCells = reinterpret_cast<API_CWSegmentPatternCellData*> (BMpAll (sizeof (API_CWSegmentPatternCellData)));
++                memo.cWSegPatternCells[0] = cell;
++            }
++
++            err = ACAPI_Element_Create (&element, &memo);
++            if (err != NoError) {
++                elements.Push (CreateErrorResponse (err, "Failed to create curtain wall."));
++                continue;
++            }
++            elements.Push (CreateElementIdObjectState (element.header.guid));
++        }
++    });
++#endif
++}
+diff --git a/archicad-addon/Sources/ExtendedElementCommands.hpp b/archicad-addon/Sources/ExtendedElementCommands.hpp
+index 33e6497..80b7e81 100644
+--- a/archicad-addon/Sources/ExtendedElementCommands.hpp
++++ b/archicad-addon/Sources/ExtendedElementCommands.hpp
+@@ -89,6 +89,16 @@ public:
+     virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
+ };
+ 
++class CreateCurtainWallsCommand : public CommandBase
++{
++public:
++    CreateCurtainWallsCommand ();
++    virtual GS::String GetName () const override;
++    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
++    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
++    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
++};
++
+ class CreateRoofsCommand : public CommandBase
+ {
+ public:
+diff --git a/docs/archicad-addon/command_definitions.js b/docs/archicad-addon/command_definitions.js
+index 9bb94a6..66ca827 100644
+--- a/docs/archicad-addon/command_definitions.js
++++ b/docs/archicad-addon/command_definitions.js
+@@ -2931,6 +2931,81 @@ var gCommands = [{
+         },
+         "additionalProperties": false,
+         "required": ["elements"]
++    }
++            },{
++                "name": "CreateCurtainWalls",
++                "version": "1.7.2",
++                "description": "Creates native Curtain Wall elements along polylines, with evenly spaced frames and optional equal horizontal divisions. Uses the Curtain Wall tool defaults or a favorite for everything else.",
++                "inputScheme": {
++        "type": "object",
++        "properties": {
++            "curtainWallsData": {
++                "type": "array",
++                "description": "Array of data to create Curtain Walls.",
++                "items": {
++                    "type": "object",
++                    "properties": {
++                        "polylineCoordinates": {
++                            "type": "array",
++                            "description": "The base line of the curtain wall: 2 or more points, one straight segment between each pair.",
++                            "items": { "$ref": "#/Coordinate2D" },
++                            "minItems": 2
++                        },
++                        "level": {
++                            "type": "number",
++                            "description": "Absolute Z of the bottom of the curtain wall."
++                        },
++                        "floorIndex": {
++                            "type": "integer",
++                            "description": "Optional home story index. If omitted, derived from level."
++                        },
++                        "height": {
++                            "type": "number",
++                            "description": "Height of the curtain wall.",
++                            "exclusiveMinimum": 0.0
++                        },
++                        "frameSpacing": {
++                            "type": "number",
++                            "description": "Optional target distance between the vertical frames (mullions). The segment is divided evenly into round(length / frameSpacing) panels. If omitted, the tool default pattern is kept.",
++                            "exclusiveMinimum": 0.0
++                        },
++                        "horizontalDivisions": {
++                            "type": "integer",
++                            "description": "Optional number of equal panel rows (1 = no transoms). If omitted together with frameSpacing, the tool default pattern is kept.",
++                            "minimum": 1
++                        },
++                        "flipped": {
++                            "type": "boolean",
++                            "description": "Optional. Flips the curtain wall to the other side of its base line."
++                        },
++                        "favoriteName": {
++                            "type": "string",
++                            "description": "Optional name of a Curtain Wall favorite applied to the tool defaults before creation."
++                        }
++                    },
++                    "additionalProperties": false,
++                    "required": [
++                        "polylineCoordinates",
++                        "level",
++                        "height"
++                    ]
++                }
++            }
++        },
++        "additionalProperties": false,
++        "required": [
++            "curtainWallsData"
++        ]
++    },
++                "outputScheme": {
++        "type": "object",
++        "properties": {
++            "elements": {
++                "$ref": "#/ElementIdsOrErrors"
++            }
++        },
++        "additionalProperties": false,
++        "required": ["elements"]
+     }
+             },{
+                 "name": "CreateRoofs",
+-- 
+2.43.0
+
