@@ -2933,6 +2933,81 @@ var gCommands = [{
         "required": ["elements"]
     }
             },{
+                "name": "CreateCurtainWalls",
+                "version": "1.7.2",
+                "description": "Creates native Curtain Wall elements along polylines, with evenly spaced frames and optional equal horizontal divisions. Uses the Curtain Wall tool defaults or a favorite for everything else.",
+                "inputScheme": {
+        "type": "object",
+        "properties": {
+            "curtainWallsData": {
+                "type": "array",
+                "description": "Array of data to create Curtain Walls.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "polylineCoordinates": {
+                            "type": "array",
+                            "description": "The base line of the curtain wall: 2 or more points, one straight segment between each pair.",
+                            "items": { "$ref": "#/Coordinate2D" },
+                            "minItems": 2
+                        },
+                        "level": {
+                            "type": "number",
+                            "description": "Absolute Z of the bottom of the curtain wall."
+                        },
+                        "floorIndex": {
+                            "type": "integer",
+                            "description": "Optional home story index. If omitted, derived from level."
+                        },
+                        "height": {
+                            "type": "number",
+                            "description": "Height of the curtain wall.",
+                            "exclusiveMinimum": 0.0
+                        },
+                        "frameSpacing": {
+                            "type": "number",
+                            "description": "Optional target distance between the vertical frames (mullions). The segment is divided evenly into round(length / frameSpacing) panels. If omitted, the tool default pattern is kept.",
+                            "exclusiveMinimum": 0.0
+                        },
+                        "horizontalDivisions": {
+                            "type": "integer",
+                            "description": "Optional number of equal panel rows (1 = no transoms). If omitted together with frameSpacing, the tool default pattern is kept.",
+                            "minimum": 1
+                        },
+                        "flipped": {
+                            "type": "boolean",
+                            "description": "Optional. Flips the curtain wall to the other side of its base line."
+                        },
+                        "favoriteName": {
+                            "type": "string",
+                            "description": "Optional name of a Curtain Wall favorite applied to the tool defaults before creation."
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "polylineCoordinates",
+                        "level",
+                        "height"
+                    ]
+                }
+            }
+        },
+        "additionalProperties": false,
+        "required": [
+            "curtainWallsData"
+        ]
+    },
+                "outputScheme": {
+        "type": "object",
+        "properties": {
+            "elements": {
+                "$ref": "#/ElementIdsOrErrors"
+            }
+        },
+        "additionalProperties": false,
+        "required": ["elements"]
+    }
+            },{
                 "name": "CreateRoofs",
                 "version": "1.4.0",
                 "description": "Creates Roof elements based on footprint, level and roof profile data. Creates a multi-plane roof by default; pass 'pivotLine' (and optionally 'angle') to create a single-plane roof instead.",

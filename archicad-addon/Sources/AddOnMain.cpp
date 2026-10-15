@@ -467,6 +467,10 @@ GSErrCode Initialize (void)
             elementCommands, "1.4.0",
             "Creates Morph elements from simple box definitions."
         );
+        err |= RegisterCommand<CreateCurtainWallsCommand> (
+            elementCommands, "1.7.2",
+            "Creates native Curtain Wall elements along polylines, with evenly spaced frames and optional equal horizontal divisions. Uses the Curtain Wall tool defaults or a favorite for everything else."
+        );
         err |= RegisterCommand<CreateRoofsCommand> (
             elementCommands, "1.4.0",
             "Creates Roof elements based on footprint, level and roof profile data. Creates a multi-plane roof by default; pass 'pivotLine' (and optionally 'angle') to create a single-plane roof instead."
