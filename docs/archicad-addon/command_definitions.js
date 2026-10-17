@@ -2951,6 +2951,11 @@ var gCommands = [{
                             "items": { "$ref": "#/Coordinate2D" },
                             "minItems": 2
                         },
+                        "arcs": {
+                            "type": "array",
+                            "description": "Optional curved segments. begIndex and endIndex are 0-based indices into polylineCoordinates (endIndex = begIndex + 1); arcAngle is positive when the segment turns counter-clockwise.",
+                            "items": { "$ref": "#/PolyArc" }
+                        },
                         "level": {
                             "type": "number",
                             "description": "Absolute Z of the bottom of the curtain wall."

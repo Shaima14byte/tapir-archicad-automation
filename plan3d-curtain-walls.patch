@@ -1,7 +1,7 @@
 From 8a6c04cd000eaa1929fdc9eedd2c6f55f35d719a Mon Sep 17 00:00:00 2001
 From: PlanTo3D <mabaniprojects@gmail.com>
 Date: Thu, 15 Oct 2026 10:37:48 +0300
-Subject: [PATCH] Add CreateCurtainWalls command and an Archicad 29 Windows
+Subject: [PATCH 1/2] Add CreateCurtainWalls command and an Archicad 29 Windows
  build workflow
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -409,6 +409,95 @@ index 9bb94a6..66ca827 100644
      }
              },{
                  "name": "CreateRoofs",
+-- 
+2.43.0
+
+
+From f275cdf6ebd16e11750a769c2e6d1eff58276fcf Mon Sep 17 00:00:00 2001
+From: PlanTo3D <mabaniprojects@gmail.com>
+Date: Sat, 17 Oct 2026 09:53:19 +0300
+Subject: [PATCH 2/2] CreateCurtainWalls: curved segments (arcs)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QYPRMNYMH1SM9hcAvkyhSC
+---
+ .../Sources/ExtendedElementCommands.cpp       | 36 ++++++++++++++++---
+ docs/archicad-addon/command_definitions.js    |  5 +++
+ 2 files changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/archicad-addon/Sources/ExtendedElementCommands.cpp b/archicad-addon/Sources/ExtendedElementCommands.cpp
+index 97d7f13..756d0f7 100644
+--- a/archicad-addon/Sources/ExtendedElementCommands.cpp
++++ b/archicad-addon/Sources/ExtendedElementCommands.cpp
+@@ -7675,6 +7675,11 @@ GS::Optional<GS::UniString> CreateCurtainWallsCommand::GetInputParametersSchema
+                             "items": { "$ref": "#/Coordinate2D" },
+                             "minItems": 2
+                         },
++                        "arcs": {
++                            "type": "array",
++                            "description": "Optional curved segments. begIndex and endIndex are 0-based indices into polylineCoordinates (endIndex = begIndex + 1); arcAngle is positive when the segment turns counter-clockwise.",
++                            "items": { "$ref": "#/PolyArc" }
++                        },
+                         "level": {
+                             "type": "number",
+                             "description": "Absolute Z of the bottom of the curtain wall."
+@@ -7815,14 +7820,35 @@ GS::ObjectState CreateCurtainWallsCommand::Execute (const GS::ObjectState& param
+             BMhKill (reinterpret_cast<GSHandle*> (&memo.coords));
+             BMhKill (reinterpret_cast<GSHandle*> (&memo.parcs));
+             memo.coords = reinterpret_cast<API_Coord**> (BMhAllClear ((nPoints + 1) * sizeof (API_Coord)));
+-            double totalLength = 0.0;
+             for (UInt32 i = 0; i < nPoints; ++i) {
+                 (*memo.coords)[i + 1] = Get2DCoordinateFromObjectState (coordinates[i]);
+-                if (i > 0) {
+-                    const API_Coord& a = (*memo.coords)[i];
+-                    const API_Coord& b = (*memo.coords)[i + 1];
+-                    totalLength = GS::Max (totalLength, sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)));
++            }
++
++            // curved segments: memo.parcs uses the same 1-based indices as memo.coords
++            GS::Array<GS::ObjectState> arcs;
++            GS::Array<API_PolyArc> polyArcs;
++            if (data.Get ("arcs", arcs)) {
++                polyArcs = GetPolyArcs (arcs, 1);
++            }
++            if (!polyArcs.IsEmpty ()) {
++                memo.parcs = reinterpret_cast<API_PolyArc**> (BMhAllClear (polyArcs.GetSize () * sizeof (API_PolyArc)));
++                for (UInt32 i = 0; i < polyArcs.GetSize (); ++i) {
++                    (*memo.parcs)[i] = polyArcs[i];
++                }
++            }
++
++            // the longest segment (along its arc) sets the number of panels
++            double totalLength = 0.0;
++            for (UInt32 i = 1; i < nPoints; ++i) {
++                const API_Coord& a = (*memo.coords)[i];
++                const API_Coord& b = (*memo.coords)[i + 1];
++                double segLength = sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
++                for (const API_PolyArc& arc : polyArcs) {
++                    if (arc.begIndex == static_cast<Int32> (i) && std::abs (arc.arcAngle) > 1e-6) {
++                        segLength = segLength / (2.0 * std::sin (std::abs (arc.arcAngle) / 2.0)) * std::abs (arc.arcAngle);
++                    }
+                 }
++                totalLength = GS::Max (totalLength, segLength);
+             }
+             element.curtainWall.nSegments = nPoints - 1;
+             element.curtainWall.height = height;
+diff --git a/docs/archicad-addon/command_definitions.js b/docs/archicad-addon/command_definitions.js
+index 66ca827..7d41d57 100644
+--- a/docs/archicad-addon/command_definitions.js
++++ b/docs/archicad-addon/command_definitions.js
+@@ -2951,6 +2951,11 @@ var gCommands = [{
+                             "items": { "$ref": "#/Coordinate2D" },
+                             "minItems": 2
+                         },
++                        "arcs": {
++                            "type": "array",
++                            "description": "Optional curved segments. begIndex and endIndex are 0-based indices into polylineCoordinates (endIndex = begIndex + 1); arcAngle is positive when the segment turns counter-clockwise.",
++                            "items": { "$ref": "#/PolyArc" }
++                        },
+                         "level": {
+                             "type": "number",
+                             "description": "Absolute Z of the bottom of the curtain wall."
 -- 
 2.43.0
 

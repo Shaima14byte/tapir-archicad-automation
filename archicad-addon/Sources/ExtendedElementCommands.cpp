@@ -7675,6 +7675,11 @@ GS::Optional<GS::UniString> CreateCurtainWallsCommand::GetInputParametersSchema 
                             "items": { "$ref": "#/Coordinate2D" },
                             "minItems": 2
                         },
+                        "arcs": {
+                            "type": "array",
+                            "description": "Optional curved segments. begIndex and endIndex are 0-based indices into polylineCoordinates (endIndex = begIndex + 1); arcAngle is positive when the segment turns counter-clockwise.",
+                            "items": { "$ref": "#/PolyArc" }
+                        },
                         "level": {
                             "type": "number",
                             "description": "Absolute Z of the bottom of the curtain wall."
@@ -7815,14 +7820,35 @@ GS::ObjectState CreateCurtainWallsCommand::Execute (const GS::ObjectState& param
             BMhKill (reinterpret_cast<GSHandle*> (&memo.coords));
             BMhKill (reinterpret_cast<GSHandle*> (&memo.parcs));
             memo.coords = reinterpret_cast<API_Coord**> (BMhAllClear ((nPoints + 1) * sizeof (API_Coord)));
-            double totalLength = 0.0;
             for (UInt32 i = 0; i < nPoints; ++i) {
                 (*memo.coords)[i + 1] = Get2DCoordinateFromObjectState (coordinates[i]);
-                if (i > 0) {
-                    const API_Coord& a = (*memo.coords)[i];
-                    const API_Coord& b = (*memo.coords)[i + 1];
-                    totalLength = GS::Max (totalLength, sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)));
+            }
+
+            // curved segments: memo.parcs uses the same 1-based indices as memo.coords
+            GS::Array<GS::ObjectState> arcs;
+            GS::Array<API_PolyArc> polyArcs;
+            if (data.Get ("arcs", arcs)) {
+                polyArcs = GetPolyArcs (arcs, 1);
+            }
+            if (!polyArcs.IsEmpty ()) {
+                memo.parcs = reinterpret_cast<API_PolyArc**> (BMhAllClear (polyArcs.GetSize () * sizeof (API_PolyArc)));
+                for (UInt32 i = 0; i < polyArcs.GetSize (); ++i) {
+                    (*memo.parcs)[i] = polyArcs[i];
                 }
+            }
+
+            // the longest segment (along its arc) sets the number of panels
+            double totalLength = 0.0;
+            for (UInt32 i = 1; i < nPoints; ++i) {
+                const API_Coord& a = (*memo.coords)[i];
+                const API_Coord& b = (*memo.coords)[i + 1];
+                double segLength = sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+                for (const API_PolyArc& arc : polyArcs) {
+                    if (arc.begIndex == static_cast<Int32> (i) && std::abs (arc.arcAngle) > 1e-6) {
+                        segLength = segLength / (2.0 * std::sin (std::abs (arc.arcAngle) / 2.0)) * std::abs (arc.arcAngle);
+                    }
+                }
+                totalLength = GS::Max (totalLength, segLength);
             }
             element.curtainWall.nSegments = nPoints - 1;
             element.curtainWall.height = height;
